@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>CubeSat Space Viewer</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: black;
+      font-family: system-ui, sans-serif;
+      color: #fff;
+    }
+    #scene-container {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+    #hud {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,0.65);
+      padding: 12px 20px;
+      border-radius: 14px;
+      display: flex;
+      gap: 40px;
+      border: 1px solid rgba(0,255,255,0.25);
+      z-index: 10;
+    }
+    .hud-col {
+      text-align: center;
+      font-size: 14px;
+    }
+    .hud-label {
+      font-size: 11px;
+      opacity: 0.6;
+      margin-bottom: 2px;
+    }
+
+    /* MQTT status pill */
+    #mqtt-status {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      padding: 6px 12px;
+      background: rgba(0,0,0,0.7);
+      border-radius: 999px;
+      border: 1px solid rgba(0,255,255,0.25);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      z-index: 20;
+    }
+    #mqtt-status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: #fbbf24; /* amber by default (connecting) */
+      box-shadow: 0 0 8px rgba(251,191,36,0.8);
+    }
+    #mqtt-status-text {
+      opacity: 0.8;
+    }
+  </style>
+</head>
+
+<body>
+
+<div id="scene-container"></div>
+
+<div id="mqtt-status">
+  <span id="mqtt-status-dot"></span>
+  <span id="mqtt-status-text">MQTT: CONNECTING…</span>
+</div>
+
+<div id="hud">
+  <div class="hud-col">
+    <div class="hud-label">ROLL</div>
+    <div id="roll-val">0°</div>
+  </div>
+  <div class="hud-col">
+    <div class="hud-label">PITCH</div>
+    <div id="pitch-val">0°</div>
+  </div>
+  <div class="hud-col">
+    <div class="hud-label">YAW</div>
+    <div id="yaw-val">0°</div>
+  </div>
+</div>
+
+<!-- Three.js global build (no modules) -->
+<script src="https://unpkg.com/three@0.137.5/build/three.min.js"></script>
+<script src="https://unpkg.com/three@0.137.5/examples/js/controls/OrbitControls.js"></script>
+<script src="https://unpkg.com/three@0.137.5/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://unpkg.com/three@0.137.5/examples/js/loaders/DRACOLoader.js"></script>
+
+<script>
+  console.log("Three.js revision:", THREE.REVISION);
+
+  // IMU state exposed to outside
+  const imuAttitude = { roll_deg: 0, pitch_deg: 0, yaw_deg: 0 };
+  window.setAttitude = function (r, p, y) {
+    if (!isNaN(r)) imuAttitude.roll_deg = r;
+    if (!isNaN(p)) imuAttitude.pitch_deg = p;
+    if (!isNaN(y)) imuAttitude.yaw_deg  = y;
+  };
+
+  // Scene setup
+  const container = document.getElementById("scene-container");
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x02040b);
+
+  const camera = new THREE.PerspectiveCamera(
+    60,
+    container.clientWidth / container.clientHeight,
+    0.1,
+    2000
+  );
+  camera.position.set(0, 0, 8);
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio || 1);
+  renderer.setSize(container.clientWidth, container.clientHeight);
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  container.appendChild(renderer.domElement);
+
+  const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.05;
+  controls.enablePan = false;
+
+  // Lights
+  scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+  const dir = new THREE.DirectionalLight(0xffffff, 1.1);
+  dir.position.set(4, 6, 8);
+  scene.add(dir);
+
+  // Star field
+  (function createStars() {
+    const pts = [];
+    const count = 1500;
+    const radius = 60;
+    for (let i = 0; i < count; i++) {
+      const r = radius;
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      pts.push(
+        r * Math.sin(phi) * Math.cos(theta),
+        r * Math.sin(phi) * Math.sin(theta),
+        r * Math.cos(phi)
+      );
+    }
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
+    const mat = new THREE.PointsMaterial({
+      color: 0x88ccff,
+      size: 0.12,
+      transparent: true,
+      opacity: 0.9
+    });
+    const stars = new THREE.Points(geom, mat);
+    scene.add(stars);
+  })();
+
+  // CubeSat model / fallback
+  let sat = null;
+
+  function createFallbackCubeSat3U() {
+    const group = new THREE.Group();
+    const unitH = 1.0;
+    const unitS = 1.0;
+    const bodyMat = new THREE.MeshStandardMaterial({
+      color: 0x1b2538,
+      metalness: 0.4,
+      roughness: 0.4,
+      emissive: 0x0ff0ff,
+      emissiveIntensity: 0.05
+    });
+
+    for (let i = 0; i < 3; i++) {
+      const geo = new THREE.BoxGeometry(unitS, unitH, unitS);
+      const mesh = new THREE.Mesh(geo, bodyMat);
+      mesh.position.set(0, (i - 1) * unitH, 0);
+      group.add(mesh);
+    }
+
+    const panelGeo = new THREE.BoxGeometry(0.06, 2.9, 1.15);
+    const panelMat = new THREE.MeshStandardMaterial({
+      color: 0x111827,
+      metalness: 0.3,
+      roughness: 0.7
+    });
+    const panel = new THREE.Mesh(panelGeo, panelMat);
+    panel.position.set(0.65, 0, 0);
+    group.add(panel);
+
+    return group;
+  }
+
+  function autoCenterScale(model) {
+    const box = new THREE.Box3().setFromObject(model);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    const maxDim = Math.max(size.x, size.y, size.z);
+    const target = 3.0;
+    const scale = maxDim > 0 ? target / maxDim : 1.0;
+    model.scale.setScalar(scale);
+
+    const newBox = new THREE.Box3().setFromObject(model);
+    const center = new THREE.Vector3();
+    newBox.getCenter(center);
+    model.position.sub(center);
+  }
+
+  // GLTF + DRACO loader
+  const loader = new THREE.GLTFLoader();
+
+  const dracoLoader = new THREE.DRACOLoader();
+  // Use Google's hosted Draco decoders
+  dracoLoader.setDecoderPath("https://www.gstatic.com/draco/v1/decoders/");
+  loader.setDRACOLoader(dracoLoader);
+
+  const glbPath = "assets/CubeSat.glb";
+  console.log("Trying to load GLB:", window.location.origin + "/" + glbPath);
+
+  loader.load(
+    glbPath,
+    function (gltf) {
+      console.log("GLB loaded successfully:", gltf);
+      sat = gltf.scene;
+      autoCenterScale(sat);
+      scene.add(sat);
+    },
+    undefined,
+    function (error) {
+      console.warn("GLB load failed, using fallback cube.", error);
+      sat = createFallbackCubeSat3U();
+      scene.add(sat);
+    }
+  );
+
+  // HUD elements
+  const rollEl  = document.getElementById("roll-val");
+  const pitchEl = document.getElementById("pitch-val");
+  const yawEl   = document.getElementById("yaw-val");
+
+  function updateHUD(r, p, y) {
+    rollEl.textContent  = r.toFixed(1) + "°";
+    pitchEl.textContent = p.toFixed(1) + "°";
+    yawEl.textContent   = y.toFixed(1) + "°";
+  }
+
+  // Animation loop
+  function animate() {
+    requestAnimationFrame(animate);
+
+    if (sat) {
+      const r = imuAttitude.roll_deg  || 0;
+      const p = imuAttitude.pitch_deg || 0;
+      const y = imuAttitude.yaw_deg   || 0;
+
+      sat.rotation.set(
+        THREE.MathUtils.degToRad(r),
+        THREE.MathUtils.degToRad(p),
+        THREE.MathUtils.degToRad(y)
+      );
+
+      updateHUD(r, p, y);
+    }
+
+    controls.update();
+    renderer.render(scene, camera);
+  }
+  animate();
+
+  window.addEventListener("resize", () => {
+    camera.aspect = container.clientWidth / container.clientHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(container.clientWidth, container.clientHeight);
+  });
+</script>
+
+<!-- MQTT over WebSockets client -->
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<script>
+  // ======================
+  // MQTT CONFIG (HiveMQ)
+  // ======================
+  const MQTT_URL   = "wss://broker.hivemq.com:8884/mqtt";
+  const MQTT_TOPIC = "cubesat/attitude";
+
+  const statusDot  = document.getElementById("mqtt-status-dot");
+  const statusText = document.getElementById("mqtt-status-text");
+
+  function setMqttStatus(mode) {
+    // mode: "connecting" | "connected" | "error" | "offline"
+    if (mode === "connecting") {
+      statusDot.style.background = "#fbbf24"; // amber
+      statusDot.style.boxShadow  = "0 0 8px rgba(251,191,36,0.8)";
+      statusText.textContent     = "MQTT: CONNECTING…";
+    } else if (mode === "connected") {
+      statusDot.style.background = "#22c55e"; // green
+      statusDot.style.boxShadow  = "0 0 8px rgba(34,197,94,0.9)";
+      statusText.textContent     = "MQTT: CONNECTED";
+    } else if (mode === "offline") {
+      statusDot.style.background = "#9ca3af"; // gray
+      statusDot.style.boxShadow  = "0 0 4px rgba(156,163,175,0.6)";
+      statusText.textContent     = "MQTT: OFFLINE";
+    } else if (mode === "error") {
+      statusDot.style.background = "#ef4444"; // red
+      statusDot.style.boxShadow  = "0 0 8px rgba(239,68,68,0.9)";
+      statusText.textContent     = "MQTT: ERROR";
+    }
+  }
+
+  setMqttStatus("connecting");
+
+  console.log("Connecting to MQTT WebSocket:", MQTT_URL);
+  const mqttClient = mqtt.connect(MQTT_URL);
+
+  mqttClient.on("connect", () => {
+    console.log("MQTT connected");
+    setMqttStatus("connected");
+
+    mqttClient.subscribe(MQTT_TOPIC, (err) => {
+      if (err) {
+        console.error("MQTT subscribe error:", err);
+        setMqttStatus("error");
+      } else {
+        console.log("Subscribed to", MQTT_TOPIC);
+      }
+    });
+  });
+
+  mqttClient.on("message", (topic, message) => {
+    try {
+      const txt  = message.toString();
+      const data = JSON.parse(txt);
+
+      const r = Number(data.roll)  || 0;
+      const p = Number(data.pitch) || 0;
+      const y = Number(data.yaw)   || 0;
+
+      // Drive the attitude
+      window.setAttitude(r, p, y);
+
+      // For debugging:
+      // console.log("MQTT attitude:", r, p, y);
+
+    } catch (err) {
+      console.error("Bad MQTT payload:", err);
+    }
+  });
+
+  mqttClient.on("error", (err) => {
+    console.error("MQTT error:", err);
+    setMqttStatus("error");
+  });
+
+  mqttClient.on("offline", () => {
+    console.warn("MQTT offline");
+    setMqttStatus("offline");
+  });
+
+  mqttClient.on("reconnect", () => {
+    console.log("MQTT reconnecting…");
+    setMqttStatus("connecting");
+  });
+</script>
+
+</body>
+</html>
