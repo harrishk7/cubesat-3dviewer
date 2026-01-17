@@ -106,8 +106,11 @@
 <script>
   console.log("Three.js revision:", THREE.REVISION);
 
-  // IMU state exposed to outside
+  // ======================
+  // IMU state (default 0,0,0)
+  // ======================
   const imuAttitude = { roll_deg: 0, pitch_deg: 0, yaw_deg: 0 };
+
   window.setAttitude = function (r, p, y) {
     if (!isNaN(r)) imuAttitude.roll_deg = r;
     if (!isNaN(p)) imuAttitude.pitch_deg = p;
@@ -178,6 +181,7 @@
     const group = new THREE.Group();
     const unitH = 1.0;
     const unitS = 1.0;
+
     const bodyMat = new THREE.MeshStandardMaterial({
       color: 0x1b2538,
       metalness: 0.4,
@@ -223,9 +227,7 @@
 
   // GLTF + DRACO loader
   const loader = new THREE.GLTFLoader();
-
   const dracoLoader = new THREE.DRACOLoader();
-  // Use Google's hosted Draco decoders
   dracoLoader.setDecoderPath("https://www.gstatic.com/draco/v1/decoders/");
   loader.setDRACOLoader(dracoLoader);
 
@@ -248,6 +250,23 @@
     }
   );
 
+  // ======================
+  // MODEL ALIGNMENT (so 0,0,0 looks neutral)
+  // ======================
+  // If your GLB is authored rotated, tweak these offsets.
+  // Start with zeros; adjust only if needed.
+  const MODEL_ALIGN_EULER = new THREE.Euler(
+    0, // x offset (rad)
+    0, // y offset (rad)
+    0, // z offset (rad)
+    "ZYX"
+  );
+  const MODEL_ALIGN_Q = new THREE.Quaternion().setFromEuler(MODEL_ALIGN_EULER);
+
+  // IMU rotation in ZYX: yaw(Z), pitch(Y), roll(X)
+  const IMU_EULER = new THREE.Euler(0, 0, 0, "ZYX");
+  const IMU_Q = new THREE.Quaternion();
+
   // HUD elements
   const rollEl  = document.getElementById("roll-val");
   const pitchEl = document.getElementById("pitch-val");
@@ -268,11 +287,16 @@
       const p = imuAttitude.pitch_deg || 0;
       const y = imuAttitude.yaw_deg   || 0;
 
-      sat.rotation.set(
-        THREE.MathUtils.degToRad(r),
-        THREE.MathUtils.degToRad(p),
-        THREE.MathUtils.degToRad(y)
-      );
+      const rr = THREE.MathUtils.degToRad(r);
+      const pp = THREE.MathUtils.degToRad(p);
+      const yy = THREE.MathUtils.degToRad(y);
+
+      // ZYX order: roll(x)=rr, pitch(y)=pp, yaw(z)=yy
+      IMU_EULER.set(rr, pp, yy, "ZYX");
+      IMU_Q.setFromEuler(IMU_EULER);
+
+      // Apply model alignment first, then IMU rotation
+      sat.quaternion.copy(MODEL_ALIGN_Q).multiply(IMU_Q);
 
       updateHUD(r, p, y);
     }
@@ -293,16 +317,22 @@
 <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
 <script>
   // ======================
-  // MQTT CONFIG (HiveMQ)
+  // MQTT CONFIG (HiveMQ Cloud - your instance)
   // ======================
-  const MQTT_URL   = "wss://broker.hivemq.com:8884/mqtt";
-  const MQTT_TOPIC = "cubesat/attitude";
+  const MQTT_HOST = "4bde42256ac0461d872447cc72b1a99f.s1.eu.hivemq.cloud";
+  const MQTT_WS_PORT = 8884;
+  const MQTT_WSS_URL = `wss://${MQTT_HOST}:${MQTT_WS_PORT}/mqtt`;
+
+  const MQTT_USERNAME = "hivemq.webclient.1768060269881";
+  const MQTT_PASSWORD = "#BFa@Eeg<f,h86d9D4CA"; // don't commit real password
+
+  const TOPIC_TLE = "cubesat/tle";
+  const TOPIC_IMU = "cubesat/attitude";
 
   const statusDot  = document.getElementById("mqtt-status-dot");
   const statusText = document.getElementById("mqtt-status-text");
 
   function setMqttStatus(mode) {
-    // mode: "connecting" | "connected" | "error" | "offline"
     if (mode === "connecting") {
       statusDot.style.background = "#fbbf24"; // amber
       statusDot.style.boxShadow  = "0 0 8px rgba(251,191,36,0.8)";
@@ -324,40 +354,47 @@
 
   setMqttStatus("connecting");
 
-  console.log("Connecting to MQTT WebSocket:", MQTT_URL);
-  const mqttClient = mqtt.connect(MQTT_URL);
+  console.log("Connecting to MQTT (WSS):", MQTT_WSS_URL);
+
+  const mqttClient = mqtt.connect(MQTT_WSS_URL, {
+    username: MQTT_USERNAME,
+    password: MQTT_PASSWORD,
+    protocolVersion: 4,     // MQTT 3.1.1
+    clean: true,
+    reconnectPeriod: 2000,
+    connectTimeout: 10000
+  });
 
   mqttClient.on("connect", () => {
     console.log("MQTT connected");
     setMqttStatus("connected");
 
-    mqttClient.subscribe(MQTT_TOPIC, (err) => {
+    mqttClient.subscribe([TOPIC_IMU, TOPIC_TLE], (err) => {
       if (err) {
         console.error("MQTT subscribe error:", err);
         setMqttStatus("error");
       } else {
-        console.log("Subscribed to", MQTT_TOPIC);
+        console.log("Subscribed to", TOPIC_IMU, "and", TOPIC_TLE);
       }
     });
   });
 
   mqttClient.on("message", (topic, message) => {
     try {
-      const txt  = message.toString();
-      const data = JSON.parse(txt);
+      const data = JSON.parse(message.toString());
 
-      const r = Number(data.roll)  || 0;
-      const p = Number(data.pitch) || 0;
-      const y = Number(data.yaw)   || 0;
+      if (topic === TOPIC_IMU) {
+        const r = Number(data.roll)  || 0;
+        const p = Number(data.pitch) || 0;
+        const y = Number(data.yaw)   || 0;
+        window.setAttitude(r, p, y);
+      }
 
-      // Drive the attitude
-      window.setAttitude(r, p, y);
-
-      // For debugging:
-      // console.log("MQTT attitude:", r, p, y);
+      // Optional: handle TLE topic later if needed
+      // if (topic === TOPIC_TLE) { ... }
 
     } catch (err) {
-      console.error("Bad MQTT payload:", err);
+      console.error("Bad MQTT payload:", err, "topic=", topic);
     }
   });
 

@@ -1,0 +1,7 @@
+# VS Code cache / databases (DO NOT COMMIT)
+.vscode/*.db
+.vscode/*.db-shm
+.vscode/*.db-wal
+
+# Optional: common local clutter
+.DS_Store
