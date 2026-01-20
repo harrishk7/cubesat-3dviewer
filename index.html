@@ -14,405 +14,333 @@
       font-family: system-ui, sans-serif;
       color: #fff;
     }
+
     #scene-container {
       position: fixed;
       inset: 0;
       width: 100%;
       height: 100%;
     }
-    #hud {
-      position: absolute;
-      bottom: 20px;
-      left: 50%;
-      transform: translateX(-50%);
-      background: rgba(0,0,0,0.65);
-      padding: 12px 20px;
-      border-radius: 14px;
-      display: flex;
-      gap: 40px;
-      border: 1px solid rgba(0,255,255,0.25);
-      z-index: 10;
-    }
-    .hud-col {
-      text-align: center;
-      font-size: 14px;
-    }
-    .hud-label {
-      font-size: 11px;
-      opacity: 0.6;
-      margin-bottom: 2px;
-    }
 
-    /* MQTT status pill */
-    #mqtt-status {
+    /* Single status light (top-left) */
+    #status-light {
       position: absolute;
-      top: 12px;
-      left: 12px;
-      padding: 6px 12px;
-      background: rgba(0,0,0,0.7);
-      border-radius: 999px;
-      border: 1px solid rgba(0,255,255,0.25);
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 11px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      z-index: 20;
-    }
-    #mqtt-status-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 999px;
-      background: #fbbf24; /* amber by default (connecting) */
-      box-shadow: 0 0 8px rgba(251,191,36,0.8);
-    }
-    #mqtt-status-text {
-      opacity: 0.8;
+      top: 14px;
+      left: 14px;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #fbbf24; /* yellow default */
+      box-shadow: 0 0 12px rgba(251,191,36,0.9);
+      z-index: 50;
     }
   </style>
 </head>
 
 <body>
 
-<div id="scene-container"></div>
+  <div id="scene-container"></div>
+  <div id="status-light"></div>
 
-<div id="mqtt-status">
-  <span id="mqtt-status-dot"></span>
-  <span id="mqtt-status-text">MQTT: CONNECTING…</span>
-</div>
+  <!-- Three.js global build (no modules) -->
+  <script src="https://unpkg.com/three@0.137.5/build/three.min.js"></script>
+  <script src="https://unpkg.com/three@0.137.5/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://unpkg.com/three@0.137.5/examples/js/loaders/GLTFLoader.js"></script>
+  <script src="https://unpkg.com/three@0.137.5/examples/js/loaders/DRACOLoader.js"></script>
 
-<div id="hud">
-  <div class="hud-col">
-    <div class="hud-label">ROLL</div>
-    <div id="roll-val">0°</div>
-  </div>
-  <div class="hud-col">
-    <div class="hud-label">PITCH</div>
-    <div id="pitch-val">0°</div>
-  </div>
-  <div class="hud-col">
-    <div class="hud-label">YAW</div>
-    <div id="yaw-val">0°</div>
-  </div>
-</div>
+  <script>
+    console.log("Three.js revision:", THREE.REVISION);
 
-<!-- Three.js global build (no modules) -->
-<script src="https://unpkg.com/three@0.137.5/build/three.min.js"></script>
-<script src="https://unpkg.com/three@0.137.5/examples/js/controls/OrbitControls.js"></script>
-<script src="https://unpkg.com/three@0.137.5/examples/js/loaders/GLTFLoader.js"></script>
-<script src="https://unpkg.com/three@0.137.5/examples/js/loaders/DRACOLoader.js"></script>
+    // ======================
+    // IMU state (default 0,0,0)
+    // ======================
+    const imuAttitude = { roll_deg: 0, pitch_deg: 0, yaw_deg: 0 };
 
-<script>
-  console.log("Three.js revision:", THREE.REVISION);
+    // External setter used by MQTT message handler
+    window.setAttitude = function (r, p, y) {
+      if (!isNaN(r)) imuAttitude.roll_deg = r;
+      if (!isNaN(p)) imuAttitude.pitch_deg = p;
+      if (!isNaN(y)) imuAttitude.yaw_deg  = y;
+    };
 
-  // ======================
-  // IMU state (default 0,0,0)
-  // ======================
-  const imuAttitude = { roll_deg: 0, pitch_deg: 0, yaw_deg: 0 };
+    // Scene setup
+    const container = document.getElementById("scene-container");
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x02040b);
 
-  window.setAttitude = function (r, p, y) {
-    if (!isNaN(r)) imuAttitude.roll_deg = r;
-    if (!isNaN(p)) imuAttitude.pitch_deg = p;
-    if (!isNaN(y)) imuAttitude.yaw_deg  = y;
-  };
+    const camera = new THREE.PerspectiveCamera(
+      60,
+      container.clientWidth / container.clientHeight,
+      0.1,
+      2000
+    );
+    camera.position.set(0, 0, 8);
 
-  // Scene setup
-  const container = document.getElementById("scene-container");
-  const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x02040b);
-
-  const camera = new THREE.PerspectiveCamera(
-    60,
-    container.clientWidth / container.clientHeight,
-    0.1,
-    2000
-  );
-  camera.position.set(0, 0, 8);
-
-  const renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setPixelRatio(window.devicePixelRatio || 1);
-  renderer.setSize(container.clientWidth, container.clientHeight);
-  renderer.outputEncoding = THREE.sRGBEncoding;
-  container.appendChild(renderer.domElement);
-
-  const controls = new THREE.OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = true;
-  controls.dampingFactor = 0.05;
-  controls.enablePan = false;
-
-  // Lights
-  scene.add(new THREE.AmbientLight(0xffffff, 0.7));
-  const dir = new THREE.DirectionalLight(0xffffff, 1.1);
-  dir.position.set(4, 6, 8);
-  scene.add(dir);
-
-  // Star field
-  (function createStars() {
-    const pts = [];
-    const count = 1500;
-    const radius = 60;
-    for (let i = 0; i < count; i++) {
-      const r = radius;
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.acos(2 * Math.random() - 1);
-      pts.push(
-        r * Math.sin(phi) * Math.cos(theta),
-        r * Math.sin(phi) * Math.sin(theta),
-        r * Math.cos(phi)
-      );
-    }
-    const geom = new THREE.BufferGeometry();
-    geom.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
-    const mat = new THREE.PointsMaterial({
-      color: 0x88ccff,
-      size: 0.12,
-      transparent: true,
-      opacity: 0.9
-    });
-    const stars = new THREE.Points(geom, mat);
-    scene.add(stars);
-  })();
-
-  // CubeSat model / fallback
-  let sat = null;
-
-  function createFallbackCubeSat3U() {
-    const group = new THREE.Group();
-    const unitH = 1.0;
-    const unitS = 1.0;
-
-    const bodyMat = new THREE.MeshStandardMaterial({
-      color: 0x1b2538,
-      metalness: 0.4,
-      roughness: 0.4,
-      emissive: 0x0ff0ff,
-      emissiveIntensity: 0.05
-    });
-
-    for (let i = 0; i < 3; i++) {
-      const geo = new THREE.BoxGeometry(unitS, unitH, unitS);
-      const mesh = new THREE.Mesh(geo, bodyMat);
-      mesh.position.set(0, (i - 1) * unitH, 0);
-      group.add(mesh);
-    }
-
-    const panelGeo = new THREE.BoxGeometry(0.06, 2.9, 1.15);
-    const panelMat = new THREE.MeshStandardMaterial({
-      color: 0x111827,
-      metalness: 0.3,
-      roughness: 0.7
-    });
-    const panel = new THREE.Mesh(panelGeo, panelMat);
-    panel.position.set(0.65, 0, 0);
-    group.add(panel);
-
-    return group;
-  }
-
-  function autoCenterScale(model) {
-    const box = new THREE.Box3().setFromObject(model);
-    const size = new THREE.Vector3();
-    box.getSize(size);
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const target = 3.0;
-    const scale = maxDim > 0 ? target / maxDim : 1.0;
-    model.scale.setScalar(scale);
-
-    const newBox = new THREE.Box3().setFromObject(model);
-    const center = new THREE.Vector3();
-    newBox.getCenter(center);
-    model.position.sub(center);
-  }
-
-  // GLTF + DRACO loader
-  const loader = new THREE.GLTFLoader();
-  const dracoLoader = new THREE.DRACOLoader();
-  dracoLoader.setDecoderPath("https://www.gstatic.com/draco/v1/decoders/");
-  loader.setDRACOLoader(dracoLoader);
-
-  const glbPath = "assets/CubeSat.glb";
-  console.log("Trying to load GLB:", window.location.origin + "/" + glbPath);
-
-  loader.load(
-    glbPath,
-    function (gltf) {
-      console.log("GLB loaded successfully:", gltf);
-      sat = gltf.scene;
-      autoCenterScale(sat);
-      scene.add(sat);
-    },
-    undefined,
-    function (error) {
-      console.warn("GLB load failed, using fallback cube.", error);
-      sat = createFallbackCubeSat3U();
-      scene.add(sat);
-    }
-  );
-
-  // ======================
-  // MODEL ALIGNMENT (so 0,0,0 looks neutral)
-  // ======================
-  // If your GLB is authored rotated, tweak these offsets.
-  // Start with zeros; adjust only if needed.
-  const MODEL_ALIGN_EULER = new THREE.Euler(
-    0, // x offset (rad)
-    0, // y offset (rad)
-    0, // z offset (rad)
-    "ZYX"
-  );
-  const MODEL_ALIGN_Q = new THREE.Quaternion().setFromEuler(MODEL_ALIGN_EULER);
-
-  // IMU rotation in ZYX: yaw(Z), pitch(Y), roll(X)
-  const IMU_EULER = new THREE.Euler(0, 0, 0, "ZYX");
-  const IMU_Q = new THREE.Quaternion();
-
-  // HUD elements
-  const rollEl  = document.getElementById("roll-val");
-  const pitchEl = document.getElementById("pitch-val");
-  const yawEl   = document.getElementById("yaw-val");
-
-  function updateHUD(r, p, y) {
-    rollEl.textContent  = r.toFixed(1) + "°";
-    pitchEl.textContent = p.toFixed(1) + "°";
-    yawEl.textContent   = y.toFixed(1) + "°";
-  }
-
-  // Animation loop
-  function animate() {
-    requestAnimationFrame(animate);
-
-    if (sat) {
-      const r = imuAttitude.roll_deg  || 0;
-      const p = imuAttitude.pitch_deg || 0;
-      const y = imuAttitude.yaw_deg   || 0;
-
-      const rr = THREE.MathUtils.degToRad(r);
-      const pp = THREE.MathUtils.degToRad(p);
-      const yy = THREE.MathUtils.degToRad(y);
-
-      // ZYX order: roll(x)=rr, pitch(y)=pp, yaw(z)=yy
-      IMU_EULER.set(rr, pp, yy, "ZYX");
-      IMU_Q.setFromEuler(IMU_EULER);
-
-      // Apply model alignment first, then IMU rotation
-      sat.quaternion.copy(MODEL_ALIGN_Q).multiply(IMU_Q);
-
-      updateHUD(r, p, y);
-    }
-
-    controls.update();
-    renderer.render(scene, camera);
-  }
-  animate();
-
-  window.addEventListener("resize", () => {
-    camera.aspect = container.clientWidth / container.clientHeight;
-    camera.updateProjectionMatrix();
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(window.devicePixelRatio || 1);
     renderer.setSize(container.clientWidth, container.clientHeight);
-  });
-</script>
+    renderer.outputEncoding = THREE.sRGBEncoding;
+    container.appendChild(renderer.domElement);
 
-<!-- MQTT over WebSockets client -->
-<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
-<script>
-  // ======================
-  // MQTT CONFIG (HiveMQ Cloud - your instance)
-  // ======================
-  const MQTT_HOST = "4bde42256ac0461d872447cc72b1a99f.s1.eu.hivemq.cloud";
-  const MQTT_WS_PORT = 8884;
-  const MQTT_WSS_URL = `wss://${MQTT_HOST}:${MQTT_WS_PORT}/mqtt`;
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+    controls.enablePan = false;
 
-  const MQTT_USERNAME = "hivemq.webclient.1768060269881";
-  const MQTT_PASSWORD = "#BFa@Eeg<f,h86d9D4CA"; // don't commit real password
+    // Lights
+    scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+    const dir = new THREE.DirectionalLight(0xffffff, 1.1);
+    dir.position.set(4, 6, 8);
+    scene.add(dir);
 
-  const TOPIC_TLE = "cubesat/tle";
-  const TOPIC_IMU = "cubesat/attitude";
+    // Star field
+    (function createStars() {
+      const pts = [];
+      const count = 1500;
+      const radius = 60;
+      for (let i = 0; i < count; i++) {
+        const r = radius;
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.acos(2 * Math.random() - 1);
+        pts.push(
+          r * Math.sin(phi) * Math.cos(theta),
+          r * Math.sin(phi) * Math.sin(theta),
+          r * Math.cos(phi)
+        );
+      }
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
+      const mat = new THREE.PointsMaterial({
+        color: 0x88ccff,
+        size: 0.12,
+        transparent: true,
+        opacity: 0.9
+      });
+      const stars = new THREE.Points(geom, mat);
+      scene.add(stars);
+    })();
 
-  const statusDot  = document.getElementById("mqtt-status-dot");
-  const statusText = document.getElementById("mqtt-status-text");
+    // CubeSat model / fallback
+    let sat = null;
 
-  function setMqttStatus(mode) {
-    if (mode === "connecting") {
-      statusDot.style.background = "#fbbf24"; // amber
-      statusDot.style.boxShadow  = "0 0 8px rgba(251,191,36,0.8)";
-      statusText.textContent     = "MQTT: CONNECTING…";
-    } else if (mode === "connected") {
-      statusDot.style.background = "#22c55e"; // green
-      statusDot.style.boxShadow  = "0 0 8px rgba(34,197,94,0.9)";
-      statusText.textContent     = "MQTT: CONNECTED";
-    } else if (mode === "offline") {
-      statusDot.style.background = "#9ca3af"; // gray
-      statusDot.style.boxShadow  = "0 0 4px rgba(156,163,175,0.6)";
-      statusText.textContent     = "MQTT: OFFLINE";
-    } else if (mode === "error") {
-      statusDot.style.background = "#ef4444"; // red
-      statusDot.style.boxShadow  = "0 0 8px rgba(239,68,68,0.9)";
-      statusText.textContent     = "MQTT: ERROR";
+    function createFallbackCubeSat3U() {
+      const group = new THREE.Group();
+      const unitH = 1.0;
+      const unitS = 1.0;
+
+      const bodyMat = new THREE.MeshStandardMaterial({
+        color: 0x1b2538,
+        metalness: 0.4,
+        roughness: 0.4,
+        emissive: 0x0ff0ff,
+        emissiveIntensity: 0.05
+      });
+
+      for (let i = 0; i < 3; i++) {
+        const geo = new THREE.BoxGeometry(unitS, unitH, unitS);
+        const mesh = new THREE.Mesh(geo, bodyMat);
+        mesh.position.set(0, (i - 1) * unitH, 0);
+        group.add(mesh);
+      }
+
+      const panelGeo = new THREE.BoxGeometry(0.06, 2.9, 1.15);
+      const panelMat = new THREE.MeshStandardMaterial({
+        color: 0x111827,
+        metalness: 0.3,
+        roughness: 0.7
+      });
+      const panel = new THREE.Mesh(panelGeo, panelMat);
+      panel.position.set(0.65, 0, 0);
+      group.add(panel);
+
+      return group;
     }
-  }
 
-  setMqttStatus("connecting");
+    function autoCenterScale(model) {
+      const box = new THREE.Box3().setFromObject(model);
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      const maxDim = Math.max(size.x, size.y, size.z);
+      const target = 3.0;
+      const scale = maxDim > 0 ? target / maxDim : 1.0;
+      model.scale.setScalar(scale);
 
-  console.log("Connecting to MQTT (WSS):", MQTT_WSS_URL);
+      const newBox = new THREE.Box3().setFromObject(model);
+      const center = new THREE.Vector3();
+      newBox.getCenter(center);
+      model.position.sub(center);
+    }
 
-  const mqttClient = mqtt.connect(MQTT_WSS_URL, {
-    username: MQTT_USERNAME,
-    password: MQTT_PASSWORD,
-    protocolVersion: 4,     // MQTT 3.1.1
-    clean: true,
-    reconnectPeriod: 2000,
-    connectTimeout: 10000
-  });
+    // GLTF + DRACO loader
+    const loader = new THREE.GLTFLoader();
+    const dracoLoader = new THREE.DRACOLoader();
+    dracoLoader.setDecoderPath("https://www.gstatic.com/draco/v1/decoders/");
+    loader.setDRACOLoader(dracoLoader);
 
-  mqttClient.on("connect", () => {
-    console.log("MQTT connected");
-    setMqttStatus("connected");
+    const glbPath = "assets/CubeSat.glb";
+    console.log("Trying to load GLB:", window.location.origin + "/" + glbPath);
 
-    mqttClient.subscribe([TOPIC_IMU, TOPIC_TLE], (err) => {
-      if (err) {
-        console.error("MQTT subscribe error:", err);
-        setMqttStatus("error");
-      } else {
-        console.log("Subscribed to", TOPIC_IMU, "and", TOPIC_TLE);
+    loader.load(
+      glbPath,
+      function (gltf) {
+        console.log("GLB loaded successfully:", gltf);
+        sat = gltf.scene;
+        autoCenterScale(sat);
+        scene.add(sat);
+      },
+      undefined,
+      function (error) {
+        console.warn("GLB load failed, using fallback cube.", error);
+        sat = createFallbackCubeSat3U();
+        scene.add(sat);
+      }
+    );
+
+    // ======================
+    // MODEL ALIGNMENT (so 0,0,0 looks neutral)
+    // ======================
+    // If your GLB is authored rotated, tweak these offsets.
+    const MODEL_ALIGN_EULER = new THREE.Euler(
+      0, // x offset (rad)
+      0, // y offset (rad)
+      0, // z offset (rad)
+      "ZYX"
+    );
+    const MODEL_ALIGN_Q = new THREE.Quaternion().setFromEuler(MODEL_ALIGN_EULER);
+
+    // IMU rotation in ZYX: yaw(Z), pitch(Y), roll(X)
+    const IMU_EULER = new THREE.Euler(0, 0, 0, "ZYX");
+    const IMU_Q = new THREE.Quaternion();
+
+    // Animation loop
+    function animate() {
+      requestAnimationFrame(animate);
+
+      if (sat) {
+        const r = imuAttitude.roll_deg  || 0;
+        const p = imuAttitude.pitch_deg || 0;
+        const y = imuAttitude.yaw_deg   || 0;
+
+        const rr = THREE.MathUtils.degToRad(r);
+        const pp = THREE.MathUtils.degToRad(p);
+        const yy = THREE.MathUtils.degToRad(y);
+
+        // ZYX order: roll(x)=rr, pitch(y)=pp, yaw(z)=yy
+        IMU_EULER.set(rr, pp, yy, "ZYX");
+        IMU_Q.setFromEuler(IMU_EULER);
+
+        // Apply model alignment first, then IMU rotation
+        sat.quaternion.copy(MODEL_ALIGN_Q).multiply(IMU_Q);
+      }
+
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    window.addEventListener("resize", () => {
+      camera.aspect = container.clientWidth / container.clientHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(container.clientWidth, container.clientHeight);
+    });
+  </script>
+
+  <!-- MQTT over WebSockets client -->
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script>
+    // ======================
+    // MQTT CONFIG (HiveMQ Cloud - your instance)
+    // ======================
+    const MQTT_HOST = "4bde42256ac0461d872447cc72b1a99f.s1.eu.hivemq.cloud";
+    const MQTT_WS_PORT = 8884;
+    const MQTT_WSS_URL = `wss://${MQTT_HOST}:${MQTT_WS_PORT}/mqtt`;
+
+    const MQTT_USERNAME = "hivemq.webclient.1768060269881";
+    const MQTT_PASSWORD = "#BFa@Eeg<f,h86d9D4CA"; // don't commit real password
+
+    const TOPIC_TLE = "cubesat/tle";
+    const TOPIC_IMU = "cubesat/attitude";
+
+    // Single status light
+    const statusLight = document.getElementById("status-light");
+
+    function setMqttStatus(state) {
+      if (state === "connecting") {
+        statusLight.style.background = "#fbbf24"; // yellow
+        statusLight.style.boxShadow  = "0 0 12px rgba(251,191,36,0.9)";
+      } else if (state === "connected") {
+        statusLight.style.background = "#22c55e"; // green
+        statusLight.style.boxShadow  = "0 0 14px rgba(34,197,94,1)";
+      } else if (state === "offline") {
+        statusLight.style.background = "#6b7280"; // gray
+        statusLight.style.boxShadow  = "0 0 6px rgba(107,114,128,0.6)";
+      } else if (state === "error") {
+        statusLight.style.background = "#ef4444"; // red
+        statusLight.style.boxShadow  = "0 0 14px rgba(239,68,68,1)";
+      }
+    }
+
+    setMqttStatus("connecting");
+    console.log("Connecting to MQTT (WSS):", MQTT_WSS_URL);
+
+    const mqttClient = mqtt.connect(MQTT_WSS_URL, {
+      username: MQTT_USERNAME,
+      password: MQTT_PASSWORD,
+      protocolVersion: 4,     // MQTT 3.1.1
+      clean: true,
+      reconnectPeriod: 2000,
+      connectTimeout: 10000
+    });
+
+    mqttClient.on("connect", () => {
+      console.log("MQTT connected");
+      setMqttStatus("connected");
+
+      mqttClient.subscribe([TOPIC_IMU, TOPIC_TLE], (err) => {
+        if (err) {
+          console.error("MQTT subscribe error:", err);
+          setMqttStatus("error");
+        } else {
+          console.log("Subscribed to", TOPIC_IMU, "and", TOPIC_TLE);
+        }
+      });
+    });
+
+    mqttClient.on("message", (topic, message) => {
+      // Keep it silent visually; still update attitude internally.
+      try {
+        const data = JSON.parse(message.toString());
+
+        if (topic === TOPIC_IMU) {
+          const r = Number(data.roll)  || 0;
+          const p = Number(data.pitch) || 0;
+          const y = Number(data.yaw)   || 0;
+          window.setAttitude(r, p, y);
+        }
+
+        // Optional: handle TLE later if needed
+        // if (topic === TOPIC_TLE) { ... }
+
+      } catch (err) {
+        console.error("Bad MQTT payload:", err, "topic=", topic);
       }
     });
-  });
 
-  mqttClient.on("message", (topic, message) => {
-    try {
-      const data = JSON.parse(message.toString());
+    mqttClient.on("error", (err) => {
+      console.error("MQTT error:", err);
+      setMqttStatus("error");
+    });
 
-      if (topic === TOPIC_IMU) {
-        const r = Number(data.roll)  || 0;
-        const p = Number(data.pitch) || 0;
-        const y = Number(data.yaw)   || 0;
-        window.setAttitude(r, p, y);
-      }
+    mqttClient.on("offline", () => {
+      console.warn("MQTT offline");
+      setMqttStatus("offline");
+    });
 
-      // Optional: handle TLE topic later if needed
-      // if (topic === TOPIC_TLE) { ... }
-
-    } catch (err) {
-      console.error("Bad MQTT payload:", err, "topic=", topic);
-    }
-  });
-
-  mqttClient.on("error", (err) => {
-    console.error("MQTT error:", err);
-    setMqttStatus("error");
-  });
-
-  mqttClient.on("offline", () => {
-    console.warn("MQTT offline");
-    setMqttStatus("offline");
-  });
-
-  mqttClient.on("reconnect", () => {
-    console.log("MQTT reconnecting…");
-    setMqttStatus("connecting");
-  });
-</script>
+    mqttClient.on("reconnect", () => {
+      console.log("MQTT reconnecting…");
+      setMqttStatus("connecting");
+    });
+  </script>
 
 </body>
 </html>
